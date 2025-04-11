@@ -17,3 +17,5 @@ kubebuilder
 
 # Ignore the built binary
 ./cert-manager-webhook-hetzner
+
+_test

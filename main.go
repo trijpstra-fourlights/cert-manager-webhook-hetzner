@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"encoding/json"
@@ -196,11 +195,25 @@ func clientConfig(c *hetznerDNSProviderSolver, ch *v1alpha1.ChallengeRequest) (i
 
 	// Get ZoneName by api search if not provided by config
 	if config.ZoneName == "" {
-		foundZone, err := searchZoneName(config, ch.ResolvedZone)
+		// Use ch.ResolvedZone which should be the FQDN minus the challenge part
+		searchDomain := ch.ResolvedZone
+		// Ensure searchDomain has a trailing dot for consistency, although searchZoneName handles it
+		if !strings.HasSuffix(searchDomain, ".") {
+			searchDomain += "."
+		}
+		klog.V(4).Infof("ZoneName not provided, attempting to search using: %s", searchDomain)
+		foundZone, err := searchZoneName(config, searchDomain)
 		if err != nil {
-			return config, err
+			return config, fmt.Errorf("error searching for zone for %s: %v", searchDomain, err)
 		}
 		config.ZoneName = foundZone
+		klog.V(2).Infof("Found ZoneName '%s' for domain '%s'", foundZone, searchDomain)
+	}
+
+	// Default API URL if not provided
+	if config.ApiUrl == "" {
+		config.ApiUrl = "https://dns.hetzner.com/api/v1"
+		klog.V(4).Infof("ApiUrl not provided, using default: %s", config.ApiUrl)
 	}
 
 	return config, nil
@@ -211,14 +224,39 @@ Domain name in Hetzner is divided in 2 parts: record + zone name. API works
 with record name that is FQDN without zone name. Subdomains is a part of
 record name and is separated by "."
 */
+// recordName extracts the relative record name from the FQDN.
+// Example: fqdn = _acme-challenge.www.example.com., domain = example.com. -> _acme-challenge.www
+// Example: fqdn = _acme-challenge.example.com., domain = example.com. -> _acme-challenge
+// Example: fqdn = example.com., domain = example.com. -> @ (Hetzner uses @ for the zone apex record name)
 func recordName(fqdn, domain string) string {
-	r := regexp.MustCompile("(.+)\\." + domain + "\\.")
-	name := r.FindStringSubmatch(fqdn)
-	if len(name) != 2 {
-		klog.Errorf("splitting domain name %s failed!", fqdn)
-		return ""
+	// Normalize by removing trailing dots, which might be present in FQDNs/Zones
+	fqdnNormalized := strings.TrimSuffix(fqdn, ".")
+	domainNormalized := strings.TrimSuffix(domain, ".")
+
+	// Handle apex domain case (though unlikely for ACME challenges which are prefixed)
+	if fqdnNormalized == domainNormalized {
+		klog.V(4).Infof("recordName: FQDN '%s' matches domain '%s', returning '@' for apex.", fqdn, domain)
+		return "@"
 	}
-	return name[1]
+
+	// Construct the expected suffix (zone name)
+	suffix := "." + domainNormalized
+
+	// Check if FQDN ends with the zone suffix and extract the prefix
+	if strings.HasSuffix(fqdnNormalized, suffix) {
+		record := strings.TrimSuffix(fqdnNormalized, suffix)
+		// Ensure record is not empty after trimming (shouldn't happen with _acme-challenge)
+		if record == "" {
+			klog.Errorf("recordName: FQDN '%s' resulted in empty record name after trimming zone '%s'. This is unexpected.", fqdn, domain)
+			return "" // Return empty string on unexpected result
+		}
+		klog.V(4).Infof("recordName: FQDN '%s', domain '%s', extracted record name '%s'", fqdn, domain, record)
+		return record
+	}
+
+	// If it doesn't end with the expected suffix, the zone/FQDN combination is likely incorrect.
+	klog.Errorf("recordName: FQDN '%s' does not seem to belong to zone '%s'. Returning empty string.", fqdn, domain)
+	return ""
 }
 
 func callDnsApi(url, method string, body io.Reader, config internal.Config) ([]byte, error) {
@@ -260,7 +298,8 @@ func searchZoneId(config internal.Config) (string, error) {
 	zoneRecords, err := callDnsApi(url, "GET", nil, config)
 
 	if err != nil {
-		return "", fmt.Errorf("unable to get zone info %v", err)
+		// Propagate API call errors
+		return "", fmt.Errorf("API error getting zone info for '%s': %v", config.ZoneName, err)
 	}
 
 	// Unmarshall response
@@ -268,25 +307,66 @@ func searchZoneId(config internal.Config) (string, error) {
 	readErr := json.Unmarshal(zoneRecords, &zones)
 
 	if readErr != nil {
-		return "", fmt.Errorf("unable to unmarshal response %v", readErr)
+		return "", fmt.Errorf("unable to unmarshal zone response for '%s': %v", config.ZoneName, readErr)
 	}
 
-	if zones.Meta.Pagination.TotalEntries != 1 {
-		return "", fmt.Errorf("wrong number of zones in response %d must be exactly = 1", zones.Meta.Pagination.TotalEntries)
+	// Check the number of zones returned
+	if zones.Meta.Pagination.TotalEntries == 0 {
+		// Explicitly return empty string and nil error if zone is not found
+		return "", nil
 	}
+
+	if zones.Meta.Pagination.TotalEntries > 1 {
+		// This case should ideally not happen if Hetzner API guarantees unique zone names
+		klog.Warningf("Found multiple zones (%d) for name '%s', using the first one.", zones.Meta.Pagination.TotalEntries, config.ZoneName)
+		// Return error as this is unexpected
+		return "", fmt.Errorf("unexpected number of zones (%d) found for name '%s'", zones.Meta.Pagination.TotalEntries, config.ZoneName)
+	}
+
+	// Exactly one zone found
 	return zones.Zones[0].Id, nil
 }
 
+// searchZoneName attempts to find the correct Hetzner zone name for a given FQDN (searchZone)
+// by iteratively querying parent domains. searchZone should typically be the value from
+// ChallengeRequest.ResolvedZone.
 func searchZoneName(config internal.Config, searchZone string) (string, error) {
-	parts := strings.Split(searchZone, ".")
-	parts = parts[:len(parts)-1]
-	for i := 0; i <= len(parts)-2; i++ {
-		config.ZoneName = strings.Join(parts[i:], ".")
-		zoneId, _ := searchZoneId(config)
-		if zoneId != "" {
-			klog.Infof("Found ID with ZoneName: %s", config.ZoneName)
-			return config.ZoneName, nil
-		}
+	// Normalize searchZone by removing any potential trailing dot
+	normalizedSearchZone := strings.TrimSuffix(searchZone, ".")
+	parts := strings.Split(normalizedSearchZone, ".")
+
+	// Need at least 2 parts (e.g., domain.com) to form a potential zone
+	if len(parts) < 2 {
+		return "", fmt.Errorf("unable to determine potential zones from searchZone: %s", searchZone)
 	}
-	return "", fmt.Errorf("unable to find hetzner dns zone with: %s", searchZone)
+
+	// Iterate from the most specific potential zone (e.g., sub.domain.com)
+	// down to the least specific (e.g., domain.com).
+	// The loop goes from i=0 (full domain) up to len(parts)-2 (TLD+1).
+	for i := 0; i <= len(parts)-2; i++ {
+		potentialZoneName := strings.Join(parts[i:], ".")
+		// Temporarily set ZoneName in config for searchZoneId call
+		config.ZoneName = potentialZoneName
+		zoneId, err := searchZoneId(config) // Capture error
+
+		if err != nil {
+			// Log the error from searchZoneId (e.g., API error, unexpected multiple zones)
+			// but continue searching parent domains as the error might be specific to this level.
+			klog.Warningf("Error searching for zone ID for '%s': %v. Trying parent domain.", potentialZoneName, err)
+			// Continue to the next iteration (parent domain)
+		}
+
+		if zoneId != "" {
+			// Found the zone successfully
+			klog.Infof("Found ZoneName: %s (searched using FQDN: %s)", potentialZoneName, searchZone)
+			return potentialZoneName, nil
+		}
+
+		// If zoneId is empty and err was nil, it means the zone wasn't found at this level.
+		// Continue to the parent domain.
+		klog.V(4).Infof("Zone '%s' not found via API, trying parent.", potentialZoneName)
+	}
+
+	// If the loop completes without finding a zone ID for any potential zone name
+	return "", fmt.Errorf("unable to find a registered Hetzner DNS zone for domain: %s or its parents", searchZone)
 }
