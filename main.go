@@ -17,7 +17,7 @@ import (
 
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/apis/acme/v1alpha1"
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
-	"github.com/vadimkim/cert-manager-webhook-hetzner/internal"
+	"github.com/trijpstra-fourlights/cert-manager-webhook-hetzner/internal"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
