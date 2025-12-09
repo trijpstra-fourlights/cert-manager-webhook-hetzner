@@ -25,7 +25,7 @@ LABEL maintainer="vadimkim <vadim@ant.ee>"
 LABEL org.opencontainers.image.source="https://github.com/trijpstra-fourlights/cert-manager-webhook-hetzner"
 
 # Install minimal runtime
-RUN apk add --no-cache ca-certificates=20250619-r0 \
+RUN apk add --no-cache ca-certificates \
     && adduser -D -u 1000 appuser
 USER appuser
 
