@@ -212,7 +212,7 @@ func clientConfig(c *hetznerDNSProviderSolver, ch *v1alpha1.ChallengeRequest) (i
 
 	// Default API URL if not provided
 	if config.ApiUrl == "" {
-		config.ApiUrl = "https://api.hetzner.com/v1"
+		config.ApiUrl = "https://api.hetzner.cloud/v1"
 		klog.V(4).Infof("ApiUrl not provided, using default: %s", config.ApiUrl)
 	}
 
