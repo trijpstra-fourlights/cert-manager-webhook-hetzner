@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOARCH=$TARGETARCH go build -o webhook -ldflags '-w -extldflag
 # ---- Final runtime image ----
 FROM alpine:3.22
 LABEL maintainer="vadimkim <vadim@ant.ee>"
-LABEL org.opencontainers.image.source="https://github.com/vadimkim/cert-manager-webhook-hetzner"
+LABEL org.opencontainers.image.source="https://github.com/trijpstra-fourlights/cert-manager-webhook-hetzner"
 
 # Install minimal runtime
 RUN apk add --no-cache ca-certificates=20250619-r0 \
