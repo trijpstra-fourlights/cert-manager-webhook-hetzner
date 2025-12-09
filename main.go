@@ -212,7 +212,7 @@ func clientConfig(c *hetznerDNSProviderSolver, ch *v1alpha1.ChallengeRequest) (i
 
 	// Default API URL if not provided
 	if config.ApiUrl == "" {
-		config.ApiUrl = "https://dns.hetzner.com/api/v1"
+		config.ApiUrl = "https://api.hetzner.com/v1"
 		klog.V(4).Infof("ApiUrl not provided, using default: %s", config.ApiUrl)
 	}
 
@@ -266,7 +266,7 @@ func callDnsApi(url, method string, body io.Reader, config internal.Config) ([]b
 		return []byte{}, fmt.Errorf("unable to execute request %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Auth-API-Token", config.ApiKey)
+	req.Header.Set("Authorization", "Bearer " + config.ApiKey)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
