@@ -1,6 +1,11 @@
 name: build
 run-name: Build and Deploy
 
+permissions:
+  contents: read
+  packages: write
+
+
 on:
   workflow_dispatch:
   push:
